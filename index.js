@@ -12,13 +12,22 @@ async function connectToWhatsApp() {
     
     sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true // Isso vai desenhar o QR Code na tela de Logs do Render
+        // printQRInTerminal foi removido para evitar o aviso
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
+
+        // Se a biblioteca gerar um QR Code, nós pegamos ele aqui e desenhamos na tela
+        if (qr) {
+            console.log('=========================================');
+            console.log('ESCANEIE O QR CODE ABAIXO NO SEU CELULAR:');
+            console.log('=========================================');
+            qrcode.generate(qr, { small: true });
+        }
+
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('Conexão fechada. Reconectando...', shouldReconnect);
@@ -30,16 +39,14 @@ async function connectToWhatsApp() {
         }
     });
 
-    // Esse bloco escuta as mensagens e mostra o ID do grupo nos logs quando você manda algo lá
     sock.ev.on('messages.upsert', async m => {
-        const msg = m.messages[0];
-        if (!msg.key.fromMe && msg.key.remoteJid.endsWith('@g.us')) {
-            console.log(`[GRUPO DETECTADO] Nome/ID: ${msg.key.remoteJid}`);
+        const msg = m.messages;
+        if (msg && msg[0] && !msg[0].key.fromMe && msg[0].key.remoteJid && msg[0].key.remoteJid.endsWith('@g.us')) {
+            console.log(`[GRUPO DETECTADO] ID do Grupo: ${msg[0].key.remoteJid}`);
         }
     });
 }
 
-// Rota do seu Webhook (Onde os sistemas vão bater)
 app.post('/webhook', async (req, res) => {
     const { grupoId, mensagem } = req.body;
 
@@ -56,7 +63,6 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
-// Inicialização do Servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Servidor rodando na porta ${PORT}`);
