@@ -5,6 +5,7 @@
   "dependencies": {
     "@whiskeysockets/baileys": "^6.5.0",
     "express": "^4.19.2",
-    "qrcode": "^1.5.3"
+    "qrcode": "^1.5.3",
+    "axios": "^1.7.2"
   }
 }
