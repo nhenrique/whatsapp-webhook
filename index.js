@@ -6,8 +6,7 @@ const axios = require('axios');
 const app = express();
 app.use(express.json());
 
-// CONFIGURAÇÃO: Cole aqui o ID da sua planilha do Google Sheets
-const SPREADSHEET_ID = 'COLE_AQUI_O_ID_DA_SUA_PLANILHA';
+const SPREADSHEET_ID = '1uqP7rdf0T3Qm1GenbF6jZTRRLlM9pd2GMe0NbpiwBIk';
 
 let sock;
 let latestQr = null;
