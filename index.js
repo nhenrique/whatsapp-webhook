@@ -60,7 +60,7 @@ async function connectToWhatsApp() {
         },
         browser: ['Ubuntu', 'Chrome', '22.04.4']
     });
-    
+
     sock.ev.on('creds.update', () => {
         const sessionText = JSON.stringify({ creds: sock.authState.creds, keys: myKeys }, BufferJSON.replacer);
         console.log('=========================================');
