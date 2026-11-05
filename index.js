@@ -12,22 +12,27 @@ let sock;
 let latestQr = null;
 let savedCreds = {};
 
-// Função inteligente que lê e grava os dados usando uma API pública do Google (sem precisar de contas complexas)
 async function useSheetsAuthState() {
     try {
         const response = await axios.get(`https://google.com{SPREADSHEET_ID}/gviz/tq?tqx=out:json`);
-        const jsonText = response.data.match(/google\.visualization\.Query\.setResponse\(([\s\S\s]*)\);/)[1];
-        const data = JSON.parse(jsonText);
-        if (data.table.rows.length > 0 && data.table.rows[0].c[0]) {
-            savedCreds = JSON.parse(data.table.rows[0].c[0].v);
+        const jsonText = response.data.match(/google\.visualization\.Query\.setResponse\(([\s\S\s]*)\);/);
+        const data = JSON.parse(jsonText[1]);
+        
+        // Correção: Valida se a linha existe e se contém um JSON válido antes de ler
+        if (data.table.rows && data.table.rows.length > 0 && data.table.rows[0].c && data.table.rows[0].c[0]) {
+            const rawValue = data.table.rows[0].c[0].v;
+            if (rawValue && rawValue.startsWith('{')) {
+                savedCreds = JSON.parse(rawValue);
+                console.log('Credenciais carregadas com sucesso da planilha.');
+            }
         }
     } catch (e) {
-        console.log('Iniciando sem credenciais salvas.');
+        console.log('Iniciando com planilha vazia. Aguardando novo QR Code.');
     }
 
     return {
         state: {
-            creds: savedCreds.creds || {},
+            creds: savedCreds.creds || sock?.authState?.creds || {},
             keys: {
                 get: async (type, ids) => {
                     const res = {};
@@ -42,26 +47,38 @@ async function useSheetsAuthState() {
             }
         },
         saveCreds: async () => {
-            savedCreds.creds = sock.authState.creds;
-            console.log('=========================================');
-            console.log('TOKEN GERADO! COPIE O TEXTO ABAIXO E COLE NA LINHA 2 DA SUA PLANILHA:');
-            console.log(JSON.stringify(savedCreds));
-            console.log('=========================================');
+            if (sock && sock.authState && sock.authState.creds) {
+                savedCreds.creds = sock.authState.creds;
+                console.log('=========================================');
+                console.log('TOKEN GERADO! COPIE O TEXTO ABAIXO E COLE NA LINHA 2 (A2) DA PLANILHA:');
+                console.log(JSON.stringify(savedCreds));
+                console.log('=========================================');
+            }
         }
     };
 }
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useSheetsAuthState();
-    sock = makeWASocket({ auth: state });
+    
+    sock = makeWASocket({ 
+        auth: state,
+        browser: ['Ubuntu', 'Chrome', '22.04.4']
+    });
+    
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
-        if (qr) latestQr = qr;
+        if (qr) {
+            latestQr = qr;
+            console.log('Novo QR Code disponível na rota /qr');
+        }
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) connectToWhatsApp();
+            if (shouldReconnect) {
+                setTimeout(() => connectToWhatsApp(), 5000); // Aguarda 5 segundos antes de reconectar
+            }
         } else if (connection === 'open') {
             latestQr = null;
             console.log('WhatsApp Conectado e autenticado via Sheets!');
@@ -69,15 +86,17 @@ async function connectToWhatsApp() {
     });
 
     sock.ev.on('messages.upsert', async m => {
-        const msg = m.messages;
+        const msg = m.messages[0];
         if (msg && !msg.key.fromMe && msg.key.remoteJid && msg.key.remoteJid.endsWith('@g.us')) {
+            console.log(`=========================================`);
             console.log(`[GRUPO DETECTADO] ID do Grupo: ${msg.key.remoteJid}`);
+            console.log(`=========================================`);
         }
     });
 }
 
 app.get('/qr', async (req, res) => {
-    if (!latestQr) return res.send('<h1>WhatsApp conectado ou lendo token. Se acabou de ligar, aguarde 30s.</h1>');
+    if (!latestQr) return res.send('<h1>WhatsApp já conectado ou gerando a sessão. Aguarde 30 segundos e atualize.</h1>');
     try {
         const qrImageBase64 = await QRCode.toDataURL(latestQr);
         res.send(`<div style="text-align: center; margin-top: 50px;"><img src="${qrImageBase64}" style="width:300px;"/></div>`);
@@ -85,7 +104,7 @@ app.get('/qr', async (req, res) => {
 });
 
 app.post('/webhook', async (req, res) => {
-    const { grupoId, mensagem } = req.body;
+    const { grupoId, mensaje } = req.body;
     try {
         await sock.sendMessage(grupoId, { text: mensaje });
         return res.json({ status: 'Sucesso' });
