@@ -1,11 +1,12 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const express = require('express');
+const QRCode = require('qrcode'); // Nova biblioteca estável
 
 const app = express();
 app.use(express.json());
 
 let sock;
-let latestQr = null; // Guarda o QR Code atual para exibir na página web
+let latestQr = null;
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
@@ -20,7 +21,7 @@ async function connectToWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            latestQr = qr; // Atualiza o QR Code
+            latestQr = qr;
             console.log('Novo QR Code gerado! Acesse a rota /qr para escanear.');
         }
 
@@ -29,7 +30,7 @@ async function connectToWhatsApp() {
             console.log('Conexão fechada. Reconectando...', shouldReconnect);
             if (shouldReconnect) connectToWhatsApp();
         } else if (connection === 'open') {
-            latestQr = null; // Apaga o QR Code após conectar
+            latestQr = null;
             console.log('=========================================');
             console.log('Sua API está ONLINE e conectada ao WhatsApp!');
             console.log('=========================================');
@@ -46,23 +47,26 @@ async function connectToWhatsApp() {
     });
 }
 
-// ROTA NOVA: Exibe o QR Code perfeitamente na tela do navegador
-app.get('/qr', (req, res) => {
+// ROTA DO QR CODE CORRIGIDA: Transforma o código em uma imagem Base64 pura
+app.get('/qr', async (req, res) => {
     if (!latestQr) {
-        return res.send('<h1>O WhatsApp já está conectado ou o QR Code ainda não foi gerado.</h1>');
+        return res.send('<h1>O WhatsApp já está conectado ou o QR Code ainda não foi gerado. Se acabou de reiniciar, aguarde 30 segundos e recarregue a página.</h1>');
     }
-    // Cria uma página simples gerando o QR Code usando a API do Google Charts
-    const qrUrl = `https://googleapis.com{encodeURIComponent(latestQr)}`;
-    res.send(`
-        <div style="text-align: center; margin-top: 50px; font-family: sans-serif;">
-            <h1>Escaneie o QR Code abaixo:</h1>
-            <img src="${qrUrl}" alt="QR Code WhatsApp" style="border: 1px solid #ccc; padding: 10px;" />
-            <p>Atualize a página se o código expirar.</p>
-        </div>
-    `);
+    
+    try {
+        const qrImageBase64 = await QRCode.toDataURL(latestQr);
+        res.send(`
+            <div style="text-align: center; margin-top: 50px; font-family: sans-serif;">
+                <h1>Escaneie o QR Code abaixo:</h1>
+                <img src="${qrImageBase64}" alt="QR Code WhatsApp" style="border: 1px solid #ccc; padding: 10px; width: 300px; height: 300px;" />
+                <p>Atualize a página se o código expirar ou o QR Code demorar para carregar.</p>
+            </div>
+        `);
+    } catch (err) {
+        res.status(500).send('Erro ao gerar imagem do QR Code');
+    }
 });
 
-// Rota para o Webhook de envio de mensagens
 app.post('/webhook', async (req, res) => {
     const { grupoId, mensagem } = req.body;
 
@@ -71,7 +75,7 @@ app.post('/webhook', async (req, res) => {
     }
 
     try {
-        await sock.sendMessage(grupoId, { text: mensagem });
+        await sock.sendMessage(grupoId, { text: mensaje });
         return res.json({ status: 'Sucesso', mensagem: 'Enviada com sucesso!' });
     } catch (error) {
         console.error('Erro ao enviar mensagem:', error);
