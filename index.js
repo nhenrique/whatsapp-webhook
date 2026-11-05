@@ -1,4 +1,4 @@
-const { default: makeWASocket, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, initAuthCreds, BufferJSON } = require('@whiskeysockets/baileys');
 const express = require('express');
 const QRCode = require('qrcode');
 const axios = require('axios');
@@ -6,67 +6,68 @@ const axios = require('axios');
 const app = express();
 app.use(express.json());
 
+// CONFIGURAÇÃO: Cole aqui o ID da sua planilha do Google Sheets
 const SPREADSHEET_ID = '1uqP7rdf0T3Qm1GenbF6jZTRRLlM9pd2GMe0NbpiwBIk';
 
 let sock;
 let latestQr = null;
-let savedCreds = {};
+let myCreds = initAuthCreds();
+let myKeys = {};
 
-async function useSheetsAuthState() {
+// Função limpa para buscar os dados salvos no Sheets
+async function loadTokensFromSheets() {
     try {
         const response = await axios.get(`https://google.com{SPREADSHEET_ID}/gviz/tq?tqx=out:json`);
         const jsonText = response.data.match(/google\.visualization\.Query\.setResponse\(([\s\S\s]*)\);/);
         const data = JSON.parse(jsonText[1]);
         
-        // Correção: Valida se a linha existe e se contém um JSON válido antes de ler
         if (data.table.rows && data.table.rows.length > 0 && data.table.rows[0].c && data.table.rows[0].c[0]) {
             const rawValue = data.table.rows[0].c[0].v;
             if (rawValue && rawValue.startsWith('{')) {
-                savedCreds = JSON.parse(rawValue);
-                console.log('Credenciais carregadas com sucesso da planilha.');
+                const decrypted = JSON.parse(rawValue, BufferJSON.reviver);
+                if (decrypted.creds) myCreds = decrypted.creds;
+                if (decrypted.keys) myKeys = decrypted.keys;
+                console.log('Sessão carregada com sucesso da planilha.');
             }
         }
     } catch (e) {
-        console.log('Iniciando com planilha vazia. Aguardando novo QR Code.');
+        console.log('Iniciando com planilha vazia.');
     }
+}
 
-    return {
-        state: {
-            creds: savedCreds.creds || sock?.authState?.creds || {},
+async function connectToWhatsApp() {
+    await loadTokensFromSheets();
+
+    sock = makeWASocket({ 
+        auth: {
+            creds: myCreds,
             keys: {
-                get: async (type, ids) => {
+                get: (type, ids) => {
                     const res = {};
-                    for (const id of ids) { if (savedCreds[`${type}-${id}`]) res[id] = savedCreds[`${type}-${id}`]; }
+                    for (const id of ids) {
+                        if (myKeys[`${type}-${id}`]) res[id] = myKeys[`${type}-${id}`];
+                    }
                     return res;
                 },
-                set: async (data) => {
+                set: (data) => {
                     for (const type in data) {
-                        for (const id in data[type]) { savedCreds[`${type}-${id}`] = data[type][id]; }
+                        for (const id in data[type]) {
+                            myKeys[`${type}-${id}`] = data[type][id];
+                        }
                     }
                 }
             }
         },
-        saveCreds: async () => {
-            if (sock && sock.authState && sock.authState.creds) {
-                savedCreds.creds = sock.authState.creds;
-                console.log('=========================================');
-                console.log('TOKEN GERADO! COPIE O TEXTO ABAIXO E COLE NA LINHA 2 (A2) DA PLANILHA:');
-                console.log(JSON.stringify(savedCreds));
-                console.log('=========================================');
-            }
-        }
-    };
-}
-
-async function connectToWhatsApp() {
-    const { state, saveCreds } = await useSheetsAuthState();
-    
-    sock = makeWASocket({ 
-        auth: state,
         browser: ['Ubuntu', 'Chrome', '22.04.4']
     });
     
-    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('creds.update', () => {
+        const sessionText = JSON.stringify({ creds: sock.authState.creds, keys: myKeys }, BufferJSON.replacer);
+        console.log('=========================================');
+        console.log('TOKEN GERADO! COPIE O TEXTO ABAIXO E COLE NA LINHA 2 (A2) DA PLANILHA:');
+        console.log(sessionText);
+        console.log('=========================================');
+    });
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
@@ -77,11 +78,11 @@ async function connectToWhatsApp() {
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             if (shouldReconnect) {
-                setTimeout(() => connectToWhatsApp(), 5000); // Aguarda 5 segundos antes de reconectar
+                setTimeout(() => connectToWhatsApp(), 5000);
             }
         } else if (connection === 'open') {
             latestQr = null;
-            console.log('WhatsApp Conectado e autenticado via Sheets!');
+            console.log('WhatsApp Conectado e autenticado!');
         }
     });
 
@@ -96,7 +97,7 @@ async function connectToWhatsApp() {
 }
 
 app.get('/qr', async (req, res) => {
-    if (!latestQr) return res.send('<h1>WhatsApp já conectado ou gerando a sessão. Aguarde 30 segundos e atualize.</h1>');
+    if (!latestQr) return res.send('<h1>WhatsApp conectado ou iniciando sessão. Aguarde 30 segundos e atualize.</h1>');
     try {
         const qrImageBase64 = await QRCode.toDataURL(latestQr);
         res.send(`<div style="text-align: center; margin-top: 50px;"><img src="${qrImageBase64}" style="width:300px;"/></div>`);
@@ -104,11 +105,11 @@ app.get('/qr', async (req, res) => {
 });
 
 app.post('/webhook', async (req, res) => {
-    const { grupoId, mensaje } = req.body;
+    const { grupoId, mensagem } = req.body;
     try {
-        await sock.sendMessage(grupoId, { text: mensaje });
+        await sock.sendMessage(grupoId, { text: mensagem });
         return res.json({ status: 'Sucesso' });
-    } catch (error) { return res.status(500).json({ error: 'Falha' }); }
+    } catch (error) { return res.status(500).json({ error: 'Falha ao enviar mensagem' }); }
 });
 
 const PORT = process.env.PORT || 3000;
